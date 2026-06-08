@@ -137,12 +137,10 @@ function AddRecipe({ onAdd }) {
   async function callAI(prompt, systemPrompt) {
     const sys = systemPrompt || `Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch("/api/claude", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
@@ -410,12 +408,10 @@ function WeeklyMenu({ recipes }) {
     setLoading(true); setErr(""); setMenu(null);
     const names = recipes.map(r=>`${r.name} (${r.calories}kcal, ${r.type})`).join(", ");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method:"POST",
         headers:{
           "Content-Type":"application/json",
-          "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-          "anthropic-version":"2023-06-01"
         },
         body: JSON.stringify({
           model:"claude-sonnet-4-20250514",
