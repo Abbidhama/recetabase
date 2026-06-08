@@ -6,7 +6,7 @@ import "./App.css";
 const FOOD_TYPES    = ["Principal","Entrante","Ensalada","Sopa","Postre","Desayuno","Snack"];
 const BASES         = ["Pasta","Arroz","Legumbre","Hoja verde","Pan/Tortilla","Caldo","Masa","Carne","Pescado"];
 const CUISINES      = ["Italiana","Mexicana","Mediterránea","Asiática","Americana","Española","Francesa","India"];
-const SOURCES       = ["Manual","PDF","Web"];
+const SOURCES       = ["Manual","PDF","Web","Texto PDF"];
 const DAYS          = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
 
 // ── MACRO BAR ────────────────────────────────────────────
@@ -115,12 +115,16 @@ function RecipeModal({ recipe, onClose }) {
   );
 }
 
+
+
 // ── ADD RECIPE ───────────────────────────────────────────
 function AddRecipe({ onAdd }) {
   const [inputMode, setInputMode] = useState("manual");
   const [loading,   setLoading]   = useState(false);
   const [aiMsg,     setAiMsg]     = useState("");
   const [urlValue,  setUrlValue]  = useState("");
+  const [pdfText,   setPdfText]   = useState("");
+  const [bulkProgress, setBulkProgress] = useState(null); // {done, total}
   const [success,   setSuccess]   = useState(false);
   const emptyForm = {
     name:"", origin:"", cuisine:"", type:"", base:"", main_ingredient:"",
@@ -130,42 +134,101 @@ function AddRecipe({ onAdd }) {
   const [form, setForm] = useState(emptyForm);
   const setF = (k,v) => setForm(f => ({...f, [k]:v}));
 
-  async function callAI(prompt) {
+  async function callAI(prompt, systemPrompt) {
+    const sys = systemPrompt || `Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
+Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: sys,
+        messages: [{ role:"user", content: prompt }]
+      })
+    });
+    const data = await res.json();
+    return data.content?.map(b => b.text||"").join("") || "";
+  }
+
+  async function handleSingleAI(prompt) {
     setLoading(true); setAiMsg("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-          "anthropic-version": "2023-06-01"
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
-Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`,
-          messages: [{ role:"user", content: prompt }]
-        })
-      });
-      const data = await res.json();
-      const text = data.content?.map(b => b.text||"").join("") || "";
+      const text = await callAI(prompt);
       const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
       setForm({
         name: parsed.name||"", origin: parsed.origin||"", cuisine: parsed.cuisine||"",
         type: parsed.type||"", base: parsed.base||"", main_ingredient: parsed.main_ingredient||"",
         calories: parsed.calories||"", protein: parsed.protein||"",
         carbs: parsed.carbs||"", fat: parsed.fat||"",
-        source: inputMode==="url"?"Web": inputMode==="pdf"?"PDF":"Manual",
+        source: inputMode==="url"?"Web":"Manual",
         ingredients: Array.isArray(parsed.ingredients) ? parsed.ingredients.join("\n") : "",
         steps:       Array.isArray(parsed.steps)       ? parsed.steps.join("\n")       : "",
         tags:        Array.isArray(parsed.tags)        ? parsed.tags.join(", ")        : ""
       });
       setAiMsg("✓ Datos extraídos. Revisa y ajusta si es necesario.");
-    } catch(e) {
+    } catch {
       setAiMsg("No se pudo procesar. Rellena el formulario manualmente.");
     }
     setLoading(false);
+  }
+
+  // ── BULK: extrae lista de recetas del texto, luego las procesa una a una
+  async function handleBulkImport() {
+    if (!pdfText.trim()) return;
+    setLoading(true); setAiMsg(""); setBulkProgress(null);
+
+    try {
+      // Paso 1: pedir a la IA que liste los nombres de todas las recetas
+      const listText = await callAI(
+        `Del siguiente texto de un plan nutricional, extrae SOLO los nombres de todas las recetas que aparecen. Responde SOLO con un array JSON de strings, sin markdown. Ejemplo: ["Receta 1","Receta 2"]\n\nTEXTO:\n${pdfText.slice(0,8000)}`,
+        `Eres un extractor de datos. Responde SOLO con JSON válido, sin markdown ni texto extra.`
+      );
+      const names = JSON.parse(listText.replace(/```json|```/g,"").trim());
+      if (!Array.isArray(names) || names.length === 0) throw new Error("No se encontraron recetas");
+
+      setBulkProgress({ done: 0, total: names.length });
+
+      // Paso 2: procesar cada receta del texto
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        try {
+          const text = await callAI(
+            `Del siguiente texto, extrae la receta completa de "${name}". Incluye ingredientes reales del texto y estima los macros nutricionales.\n\nTEXTO:\n${pdfText.slice(0,8000)}`
+          );
+          const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
+          const recipe = {
+            name: parsed.name || name,
+            origin: parsed.origin || "",
+            cuisine: parsed.cuisine || "Española",
+            type: parsed.type || "Principal",
+            base: parsed.base || "",
+            main_ingredient: parsed.main_ingredient || "",
+            calories: parseInt(parsed.calories) || 0,
+            protein:  parseInt(parsed.protein)  || 0,
+            carbs:    parseInt(parsed.carbs)    || 0,
+            fat:      parseInt(parsed.fat)      || 0,
+            source: "PDF",
+            ingredients: Array.isArray(parsed.ingredients) ? parsed.ingredients : [],
+            steps:       Array.isArray(parsed.steps)       ? parsed.steps       : [],
+            tags:        Array.isArray(parsed.tags)        ? parsed.tags        : []
+          };
+          await onAdd(recipe, true); // true = silencioso, no redirigir
+        } catch { /* si falla una, seguimos con la siguiente */ }
+        setBulkProgress({ done: i + 1, total: names.length });
+      }
+
+      setAiMsg(`✅ ${names.length} recetas importadas correctamente.`);
+      setPdfText("");
+    } catch (e) {
+      setAiMsg("Error al procesar el texto. Asegúrate de haber pegado el texto completo.");
+    }
+    setLoading(false);
+    setBulkProgress(null);
   }
 
   async function handleSave() {
@@ -189,11 +252,11 @@ Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main
   return (
     <div className="add-form">
       <div className="form-title">Añadir Receta</div>
-      <div className="form-subtitle">Importa desde PDF, URL o añade manualmente. La IA extrae los datos automáticamente.</div>
+      <div className="form-subtitle">Importa desde texto de PDF, URL o añade manualmente.</div>
 
-      <div className="input-sources">
+      <div className="input-sources" style={{gridTemplateColumns:"repeat(3,1fr)"}}>
         {[{key:"manual",icon:"✍️",label:"Manual",desc:"Rellena el formulario"},
-          {key:"pdf",   icon:"📄",label:"Desde PDF",desc:"Sube un archivo PDF"},
+          {key:"pdf",   icon:"📋",label:"Pegar texto PDF",desc:"Copia el texto del PDF aquí"},
           {key:"url",   icon:"🌐",label:"Desde Web",desc:"Pega una URL"}
         ].map(s => (
           <button key={s.key} className={`source-btn ${inputMode===s.key?"active":""}`} onClick={()=>setInputMode(s.key)}>
@@ -204,108 +267,134 @@ Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main
         ))}
       </div>
 
+      {/* ── MODO PDF: pegar texto ── */}
       {inputMode==="pdf" && (
         <div className="form-section">
-          <div className="drop-zone" onClick={()=>document.getElementById("pdf-upload").click()}>
-            <div className="drop-zone-icon">📄</div>
-            <div className="drop-zone-text">Haz clic para subir un PDF</div>
-            <input id="pdf-upload" type="file" accept=".pdf" style={{display:"none"}}
-              onChange={e=>{ if(e.target.files[0]) callAI(`Extrae la receta de un PDF llamado "${e.target.files[0].name}". Genera datos completos y realistas.`); }}/>
+          <div className="ai-hint-box">
+            📋 <strong>Cómo usarlo:</strong> Abre tu PDF → selecciona todo el texto (<strong>Ctrl+A</strong>) → cópialo (<strong>Ctrl+C</strong>) → pégalo aquí abajo (<strong>Ctrl+V</strong>). La IA extraerá todas las recetas automáticamente.
           </div>
-          {loading && <div className="loading-row"><div className="spinner-dark"/>Procesando con IA...</div>}
-          {aiMsg && <div className="success-badge">✓ {aiMsg}</div>}
+          <label className="form-label">Texto del PDF</label>
+          <textarea
+            className="form-input form-textarea"
+            style={{minHeight:180}}
+            placeholder="Pega aquí el texto copiado de tu PDF..."
+            value={pdfText}
+            onChange={e=>setPdfText(e.target.value)}
+          />
+          {bulkProgress && (
+            <div style={{margin:"12px 0"}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--warm-gray)",marginBottom:6}}>
+                <span>Importando recetas...</span>
+                <span>{bulkProgress.done} / {bulkProgress.total}</span>
+              </div>
+              <div style={{height:6,background:"#E8E3DB",borderRadius:3,overflow:"hidden"}}>
+                <div style={{height:"100%",background:"var(--rust)",borderRadius:3,width:`${(bulkProgress.done/bulkProgress.total)*100}%`,transition:"width .3s"}}/>
+              </div>
+            </div>
+          )}
+          <div style={{display:"flex",gap:12,alignItems:"center",marginTop:12,flexWrap:"wrap"}}>
+            <button className="btn-ai" onClick={handleBulkImport} disabled={loading||!pdfText.trim()}>
+              {loading ? <><div className="spinner"/>Procesando...</> : <>🤖 Importar todas las recetas con IA</>}
+            </button>
+          </div>
+          {aiMsg && <div className="success-badge" style={{marginTop:10}}>{aiMsg}</div>}
         </div>
       )}
 
+      {/* ── MODO URL ── */}
       {inputMode==="url" && (
         <div className="form-section">
           <label className="form-label">URL de la receta</label>
           <div className="url-input-row">
             <input className="form-input" placeholder="https://..." value={urlValue} onChange={e=>setUrlValue(e.target.value)}/>
-            <button className="btn-fetch" onClick={()=>callAI(`Extrae la receta de esta URL: ${urlValue}`)} disabled={loading}>
+            <button className="btn-fetch" onClick={()=>handleSingleAI(`Extrae la receta de esta URL: ${urlValue}`)} disabled={loading}>
               {loading ? <div className="spinner"/> : "Extraer con IA"}
             </button>
           </div>
-          {aiMsg && <div className="success-badge" style={{marginTop:10}}>✓ {aiMsg}</div>}
+          {aiMsg && <div className="success-badge" style={{marginTop:10}}>{aiMsg}</div>}
         </div>
       )}
 
+      {/* ── MODO MANUAL ── */}
       {inputMode==="manual" && (
         <div className="ai-hint-box">
           🤖 <strong>Tip:</strong> Escribe solo el nombre y pulsa <em>"Completar con IA"</em> para que se rellene automáticamente.
         </div>
       )}
 
-      <div className="form-section">
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Nombre *</label>
-            <input className="form-input" placeholder="Ej: Lasaña boloñesa" value={form.name} onChange={e=>setF("name",e.target.value)}/>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Origen</label>
-            <input className="form-input" placeholder="Ej: Bolonia, Italia" value={form.origin} onChange={e=>setF("origin",e.target.value)}/>
-          </div>
-        </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Cocina</label>
-            <select className="form-input form-select" value={form.cuisine} onChange={e=>setF("cuisine",e.target.value)}>
-              <option value="">Selecciona...</option>
-              {CUISINES.map(c=><option key={c}>{c}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Tipo de plato</label>
-            <select className="form-input form-select" value={form.type} onChange={e=>setF("type",e.target.value)}>
-              <option value="">Selecciona...</option>
-              {FOOD_TYPES.map(t=><option key={t}>{t}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Base del plato</label>
-            <select className="form-input form-select" value={form.base} onChange={e=>setF("base",e.target.value)}>
-              <option value="">Selecciona...</option>
-              {BASES.map(b=><option key={b}>{b}</option>)}
-            </select>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Ingrediente principal</label>
-            <input className="form-input" placeholder="Ej: Pollo, Tofu..." value={form.main_ingredient} onChange={e=>setF("main_ingredient",e.target.value)}/>
-          </div>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
-          {[["calories","Calorías"],["protein","Proteínas (g)"],["carbs","Carbohidratos (g)"],["fat","Grasas (g)"]].map(([k,l])=>(
-            <div key={k} className="form-group" style={{marginBottom:0}}>
-              <label className="form-label">{l}</label>
-              <input className="form-input" type="number" placeholder="0" value={form[k]} onChange={e=>setF(k,e.target.value)}/>
+      {/* ── FORMULARIO (manual y url) ── */}
+      {(inputMode==="manual" || inputMode==="url") && (
+        <div className="form-section">
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Nombre *</label>
+              <input className="form-input" placeholder="Ej: Lasaña boloñesa" value={form.name} onChange={e=>setF("name",e.target.value)}/>
             </div>
-          ))}
+            <div className="form-group">
+              <label className="form-label">Origen</label>
+              <input className="form-input" placeholder="Ej: Bolonia, Italia" value={form.origin} onChange={e=>setF("origin",e.target.value)}/>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Cocina</label>
+              <select className="form-input form-select" value={form.cuisine} onChange={e=>setF("cuisine",e.target.value)}>
+                <option value="">Selecciona...</option>
+                {CUISINES.map(c=><option key={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Tipo de plato</label>
+              <select className="form-input form-select" value={form.type} onChange={e=>setF("type",e.target.value)}>
+                <option value="">Selecciona...</option>
+                {FOOD_TYPES.map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">Base del plato</label>
+              <select className="form-input form-select" value={form.base} onChange={e=>setF("base",e.target.value)}>
+                <option value="">Selecciona...</option>
+                {BASES.map(b=><option key={b}>{b}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Ingrediente principal</label>
+              <input className="form-input" placeholder="Ej: Pollo, Tofu..." value={form.main_ingredient} onChange={e=>setF("main_ingredient",e.target.value)}/>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+            {[["calories","Calorías"],["protein","Proteínas (g)"],["carbs","Carbohidratos (g)"],["fat","Grasas (g)"]].map(([k,l])=>(
+              <div key={k} className="form-group" style={{marginBottom:0}}>
+                <label className="form-label">{l}</label>
+                <input className="form-input" type="number" placeholder="0" value={form[k]} onChange={e=>setF(k,e.target.value)}/>
+              </div>
+            ))}
+          </div>
+          <div className="form-group">
+            <label className="form-label">Ingredientes (uno por línea)</label>
+            <textarea className="form-input form-textarea" placeholder={"200g pasta\n2 huevos\n..."} value={form.ingredients} onChange={e=>setF("ingredients",e.target.value)}/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Pasos de preparación (uno por línea)</label>
+            <textarea className="form-input form-textarea" placeholder={"Cocer la pasta\nPreparar la salsa..."} value={form.steps} onChange={e=>setF("steps",e.target.value)}/>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Etiquetas (separadas por comas)</label>
+            <input className="form-input" placeholder="rápida, vegana, sin gluten..." value={form.tags} onChange={e=>setF("tags",e.target.value)}/>
+          </div>
+          <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+            {inputMode==="manual" && (
+              <button className="btn-ai" onClick={()=>form.name&&handleSingleAI(`Genera receta completa para "${form.name}"${form.origin?` de ${form.origin}`:""}`)} disabled={loading||!form.name}>
+                {loading ? <><div className="spinner"/>Procesando...</> : <>🤖 Completar con IA</>}
+              </button>
+            )}
+            <button className="btn-primary" onClick={handleSave} disabled={!form.name}>Guardar Receta</button>
+            {success && <div className="success-badge">✅ Guardada en la base de datos</div>}
+          </div>
         </div>
-        <div className="form-group">
-          <label className="form-label">Ingredientes (uno por línea)</label>
-          <textarea className="form-input form-textarea" placeholder={"200g pasta\n2 huevos\n..."} value={form.ingredients} onChange={e=>setF("ingredients",e.target.value)}/>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Pasos de preparación (uno por línea)</label>
-          <textarea className="form-input form-textarea" placeholder={"Cocer la pasta\nPreparar la salsa..."} value={form.steps} onChange={e=>setF("steps",e.target.value)}/>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Etiquetas (separadas por comas)</label>
-          <input className="form-input" placeholder="rápida, vegana, sin gluten..." value={form.tags} onChange={e=>setF("tags",e.target.value)}/>
-        </div>
-        <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
-          {inputMode==="manual" && (
-            <button className="btn-ai" onClick={()=>form.name&&callAI(`Genera receta completa para "${form.name}"${form.origin?` de ${form.origin}`:""}`)} disabled={loading||!form.name}>
-              {loading ? <><div className="spinner"/>Procesando...</> : <>🤖 Completar con IA</>}
-            </button>
-          )}
-          <button className="btn-primary" onClick={handleSave} disabled={!form.name}>Guardar Receta</button>
-          {success && <div className="success-badge">✅ Guardada en la base de datos</div>}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -433,10 +522,10 @@ export default function App() {
     return true;
   });
 
-  async function handleAdd(recipe) {
+  async function handleAdd(recipe, silent = false) {
     const saved = await addRecipe(recipe);
     setRecipes(prev => [saved, ...prev]);
-    setTab("recipes");
+    if (!silent) setTab("recipes");
   }
 
   async function handleDelete(id) {
