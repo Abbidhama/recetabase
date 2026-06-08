@@ -1,1 +1,1 @@
-{"rewrites":[{"source":"/api/(.*)","destination":"/api/$1"},{"source":"/((?!api).*)","destination":"/index.html"}]}
+{"buildCommand":"react-scripts build","outputDirectory":"build","rewrites":[{"source":"/api/(.*)","destination":"/api/$1"},{"source":"/((?!api).*)","destination":"/index.html"}]}
