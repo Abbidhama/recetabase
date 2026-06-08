@@ -139,7 +139,7 @@ function AddRecipe({ onAdd }) {
 Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
     const res = await fetch("https://subgcucynbjrhnkpsfjh.supabase.co/functions/v1/claude-proxy", {
       method: "POST",
-      headers: { "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1YmdjdWN5bmJqcmhua3BzZmpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NTE5MzIsImV4cCI6MjA5NjQyNzkzMn0.nQf2cGp04qbUYGFAQ1WCFKrWCtfPCxa-QzlpuIudidE",
+      headers: { "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1YmdjdWN5bmJqcmhua3BzZmpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NTE5MzIsImV4cCI6MjA5NjQyNzkzMn0.nQf2cGp04qbUYGFAQ1WCFKrWCtfPCxa-QzlpuIudidE",
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
