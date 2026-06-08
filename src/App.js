@@ -422,7 +422,7 @@ Estructura: {"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","dinner"
         })
       });
       const data = await res.json();
-      const text = data.content?.map(b=>b.text||"").join("")||"";
+      console.log("AI response:", JSON.stringify(data)); const text = data.content?.map(b=>b.text||"").join("")||"";
       setMenu(JSON.parse(text.replace(/```json|```/g,"").trim()));
     } catch {
       setErr("No se pudo generar el menú. Comprueba tu API key en el .env.local");
