@@ -143,7 +143,7 @@ Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-5",
         max_tokens: 1000,
         system: sys,
         messages: [{ role:"user", content: prompt }]
@@ -414,7 +414,7 @@ function WeeklyMenu({ recipes }) {
           "Content-Type":"application/json",
         },
         body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
+          model:"claude-sonnet-4-5",
           max_tokens:1000,
           system:`Eres nutricionista experto. Responde SOLO en JSON válido, sin markdown.
 Estructura: {"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","dinner":"nombre","totalCal":0},... 7 días]}`,
