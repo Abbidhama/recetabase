@@ -137,13 +137,13 @@ function AddRecipe({ onAdd }) {
   async function callAI(prompt, systemPrompt) {
     const sys = systemPrompt || `Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
-    const res = await fetch("https://subgcucynbjrhnkpsfjh.supabase.co/functions/v1/claude-proxy", {
+    const res = await fetch("/api/claude", {
       method: "POST",
-      headers: { "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1YmdjdWN5bmJqcmhua3BzZmpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NTE5MzIsImV4cCI6MjA5NjQyNzkzMn0.nQf2cGp04qbUYGFAQ1WCFKrWCtfPCxa-QzlpuIudidE",
+      headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
         system: sys,
         messages: [{ role:"user", content: prompt }]
@@ -399,89 +399,168 @@ Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main
 
 // ── WEEKLY MENU ──────────────────────────────────────────
 function WeeklyMenu({ recipes }) {
-  const [prefs,   setPrefs]   = useState({ maxCal:600, cuisine:"", diet:"" });
+  const [prefs, setPrefs] = useState({
+    dailyCal: 1800, cuisine: "", diet: "",
+    proteinPct: 30, carbsPct: 40, fatPct: 30
+  });
   const [menu,    setMenu]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [err,     setErr]     = useState("");
 
+  const setP = (k,v) => setPrefs(p => ({...p,[k]:v}));
+
+  // Ensure macros always sum to 100
+  const handleMacro = (k, v) => {
+    const val = Math.min(100, Math.max(0, parseInt(v)||0));
+    if (k==="proteinPct") { const rem = 100-val; setPrefs(p=>({...p,proteinPct:val,carbsPct:Math.round(rem*p.carbsPct/(p.carbsPct+p.fatPct)||rem/2),fatPct:Math.round(rem*p.fatPct/(p.carbsPct+p.fatPct)||rem/2)})); }
+    else if (k==="carbsPct") { const rem = 100-val; setPrefs(p=>({...p,carbsPct:val,proteinPct:Math.round(rem*p.proteinPct/(p.proteinPct+p.fatPct)||rem/2),fatPct:Math.round(rem*p.fatPct/(p.proteinPct+p.fatPct)||rem/2)})); }
+    else { const rem = 100-val; setPrefs(p=>({...p,fatPct:val,proteinPct:Math.round(rem*p.proteinPct/(p.proteinPct+p.carbsPct)||rem/2),carbsPct:Math.round(rem*p.carbsPct/(p.proteinPct+p.carbsPct)||rem/2)})); }
+  };
+
   async function generateMenu() {
     setLoading(true); setErr(""); setMenu(null);
     const names = recipes.map(r=>`${r.name} (${r.calories}kcal, ${r.type})`).join(", ");
+    const proteinG = Math.round((prefs.dailyCal * prefs.proteinPct/100) / 4);
+    const carbsG   = Math.round((prefs.dailyCal * prefs.carbsPct/100)   / 4);
+    const fatG     = Math.round((prefs.dailyCal * prefs.fatPct/100)     / 9);
     try {
       const res = await fetch("https://subgcucynbjrhnkpsfjh.supabase.co/functions/v1/claude-proxy", {
         method:"POST",
         headers:{
           "Content-Type":"application/json",
+          "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1YmdjdWN5bmJqcmhua3BzZmpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NTE5MzIsImV4cCI6MjA5NjQyNzkzMn0.nQf2cGp04qbUYGFAQ1WCFKrWCtfPCxa-QzlpuIudidE",
         },
         body: JSON.stringify({
           model:"claude-sonnet-4-5",
-          max_tokens:1000,
+          max_tokens:1500,
           system:`Eres nutricionista experto. Responde SOLO en JSON válido, sin markdown.
-Estructura: {"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","dinner":"nombre","totalCal":0},... 7 días]}`,
-          messages:[{role:"user",content:`Menú semanal: máx ${prefs.maxCal}kcal/comida${prefs.cuisine?`, cocina ${prefs.cuisine}`:""}${prefs.diet?`, dieta ${prefs.diet}`:""}.${names?` Recetas disponibles: ${names}`:""}`}]
+Estructura exacta (7 días, 4 comidas por día):
+{"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","snack":"nombre","dinner":"nombre","totalCal":0,"totalProtein":0,"totalCarbs":0,"totalFat":0},...]}`,
+          messages:[{role:"user",content:`Crea un menú semanal de 7 días con 4 comidas diarias (desayuno, comida, snack y cena).
+Calorías totales diarias: ${prefs.dailyCal} kcal.
+Distribución de macros: ${prefs.proteinPct}% proteína (~${proteinG}g), ${prefs.carbsPct}% carbohidratos (~${carbsG}g), ${prefs.fatPct}% grasas (~${fatG}g).
+${prefs.cuisine?`Estilo de cocina: ${prefs.cuisine}.`:""}
+${prefs.diet?`Tipo de dieta: ${prefs.diet}.`:""}
+${names?`Recetas disponibles en la base de datos: ${names}.`:""}`}]
         })
       });
       const data = await res.json();
-      console.log("AI response:", JSON.stringify(data)); const text = data.content?.map(b=>b.text||"").join("")||"";
+      const text = data.content?.map(b=>b.text||"").join("")||"";
       setMenu(JSON.parse(text.replace(/```json|```/g,"").trim()));
     } catch {
-      setErr("No se pudo generar el menú. Comprueba tu API key en el .env.local");
+      setErr("No se pudo generar el menú. Inténtalo de nuevo.");
     }
     setLoading(false);
   }
 
   const totalCal = menu?.days?.reduce((s,d)=>s+(d.totalCal||0),0)||0;
+  const avgProtein = menu?.days ? Math.round(menu.days.reduce((s,d)=>s+(d.totalProtein||0),0)/7) : 0;
+  const avgCarbs   = menu?.days ? Math.round(menu.days.reduce((s,d)=>s+(d.totalCarbs||0),0)/7)   : 0;
+  const avgFat     = menu?.days ? Math.round(menu.days.reduce((s,d)=>s+(d.totalFat||0),0)/7)     : 0;
 
   return (
     <div className="menu-generator">
       <div className="form-title">Menú Semanal con IA</div>
-      <div className="form-subtitle">Genera un plan de 7 días equilibrado basado en tus recetas guardadas.</div>
-      <div className="menu-options">
+      <div className="form-subtitle">4 comidas al día ajustadas a tus calorías y macros.</div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:20}}>
+        {/* Calorías diarias */}
         <div className="menu-option-card">
-          <div className="menu-option-label">CALORÍAS MÁX. / COMIDA</div>
-          <input className="form-input" type="number" value={prefs.maxCal} onChange={e=>setPrefs(p=>({...p,maxCal:e.target.value}))}/>
+          <div className="menu-option-label">CALORÍAS TOTALES / DÍA</div>
+          <input className="form-input" type="number" value={prefs.dailyCal} onChange={e=>setP("dailyCal",e.target.value)}/>
+          <div style={{fontSize:11,color:"var(--warm-gray)",marginTop:4}}>
+            Desayuno ~{Math.round(prefs.dailyCal*0.25)}kcal · Comida ~{Math.round(prefs.dailyCal*0.35)}kcal · Snack ~{Math.round(prefs.dailyCal*0.15)}kcal · Cena ~{Math.round(prefs.dailyCal*0.25)}kcal
+          </div>
         </div>
-        <div className="menu-option-card">
-          <div className="menu-option-label">ESTILO DE COCINA</div>
-          <select className="form-input form-select" value={prefs.cuisine} onChange={e=>setPrefs(p=>({...p,cuisine:e.target.value}))}>
-            <option value="">Variado</option>
-            {CUISINES.map(c=><option key={c}>{c}</option>)}
-          </select>
-        </div>
-        <div className="menu-option-card">
-          <div className="menu-option-label">TIPO DE DIETA</div>
-          <select className="form-input form-select" value={prefs.diet} onChange={e=>setPrefs(p=>({...p,diet:e.target.value}))}>
-            <option value="">Sin restricciones</option>
-            <option>Vegetariana</option><option>Vegana</option>
-            <option>Sin gluten</option><option>Mediterránea</option>
-            <option>Alta en proteínas</option>
-          </select>
+
+        {/* Dieta y cocina */}
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <div className="menu-option-card" style={{padding:"10px 14px"}}>
+            <div className="menu-option-label">TIPO DE DIETA</div>
+            <select className="form-input form-select" value={prefs.diet} onChange={e=>setP("diet",e.target.value)}>
+              <option value="">Sin restricciones</option>
+              <option>Vegetariana</option><option>Vegana</option>
+              <option>Sin gluten</option><option>Mediterránea</option>
+              <option>Alta en proteínas</option>
+            </select>
+          </div>
+          <div className="menu-option-card" style={{padding:"10px 14px"}}>
+            <div className="menu-option-label">ESTILO DE COCINA</div>
+            <select className="form-input form-select" value={prefs.cuisine} onChange={e=>setP("cuisine",e.target.value)}>
+              <option value="">Variado</option>
+              {CUISINES.map(c=><option key={c}>{c}</option>)}
+            </select>
+          </div>
         </div>
       </div>
+
+      {/* Distribución de macros */}
+      <div className="menu-option-card" style={{marginBottom:20}}>
+        <div className="menu-option-label" style={{marginBottom:12}}>DISTRIBUCIÓN DE MACROS</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
+          {[
+            ["proteinPct","Proteína %","#B85C2C", Math.round((prefs.dailyCal*prefs.proteinPct/100)/4)+"g"],
+            ["carbsPct","Carbohidratos %","#C4963A", Math.round((prefs.dailyCal*prefs.carbsPct/100)/4)+"g"],
+            ["fatPct","Grasas %","#5C7A5C", Math.round((prefs.dailyCal*prefs.fatPct/100)/9)+"g"]
+          ].map(([k,lbl,color,grams])=>(
+            <div key={k}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
+                <span style={{color:"var(--warm-gray)"}}>{lbl}</span>
+                <span style={{color,fontWeight:600}}>{prefs[k]}% · {grams}</span>
+              </div>
+              <input type="range" className="slider" min="10" max="70" value={prefs[k]}
+                style={{"--val":`${((prefs[k]-10)/60)*100}%`, accentColor:color}}
+                onChange={e=>handleMacro(k,e.target.value)}/>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:10,height:8,borderRadius:4,overflow:"hidden",display:"flex",gap:2}}>
+          <div style={{background:"#B85C2C",width:`${prefs.proteinPct}%`,transition:"width .3s"}}/>
+          <div style={{background:"#C4963A",width:`${prefs.carbsPct}%`,transition:"width .3s"}}/>
+          <div style={{background:"#5C7A5C",width:`${prefs.fatPct}%`,transition:"width .3s"}}/>
+        </div>
+        <div style={{display:"flex",gap:16,fontSize:11,color:"var(--warm-gray)",marginTop:6}}>
+          <span><span className="macro-dot" style={{background:"#B85C2C"}}/>Proteína {prefs.proteinPct}%</span>
+          <span><span className="macro-dot" style={{background:"#C4963A"}}/>Carbos {prefs.carbsPct}%</span>
+          <span><span className="macro-dot" style={{background:"#5C7A5C"}}/>Grasas {prefs.fatPct}%</span>
+          <span style={{marginLeft:"auto",fontWeight:600,color: Math.abs(prefs.proteinPct+prefs.carbsPct+prefs.fatPct-100)>2?"var(--rust)":"var(--sage)"}}>
+            Total: {prefs.proteinPct+prefs.carbsPct+prefs.fatPct}%
+          </span>
+        </div>
+      </div>
+
       <button className="btn-ai" onClick={generateMenu} disabled={loading}>
-        {loading ? <><div className="spinner"/>Generando...</> : <>✨ Generar Menú con IA</>}
+        {loading ? <><div className="spinner"/>Generando menú...</> : <>✨ Generar Menú con IA</>}
       </button>
       {err && <div style={{color:"var(--rust)",marginTop:12,fontSize:13}}>{err}</div>}
+
       {menu && (
         <div style={{marginTop:24}}>
           <div className="week-grid">
             {menu.days?.map((day,i)=>(
               <div key={i} className="day-column">
                 <div className="day-header">{day.day}</div>
-                {[["Desayuno",day.breakfast],["Comida",day.lunch],["Cena",day.dinner]].map(([tipo,nombre])=>(
+                {[["🌅","Desayuno",day.breakfast],["🍽️","Comida",day.lunch],["🍎","Snack",day.snack],["🌙","Cena",day.dinner]].map(([icon,tipo,nombre])=>(
                   <div key={tipo} className="day-meal">
-                    <div className="day-meal-type">{tipo}</div>
+                    <div className="day-meal-type">{icon} {tipo}</div>
                     <div className="day-meal-name">{nombre}</div>
                   </div>
                 ))}
-                <div style={{fontSize:11,color:"var(--rust)",textAlign:"center",marginTop:4,fontWeight:600}}>~{day.totalCal} kcal</div>
+                <div style={{fontSize:10,color:"var(--rust)",textAlign:"center",marginTop:4,fontWeight:600}}>
+                  {day.totalCal} kcal
+                </div>
+                <div style={{fontSize:9,color:"var(--warm-gray)",textAlign:"center"}}>
+                  P:{day.totalProtein}g C:{day.totalCarbs}g G:{day.totalFat}g
+                </div>
               </div>
             ))}
           </div>
           <div className="menu-total-row">
-            <div className="menu-total-item"><div className="menu-total-value">{totalCal.toLocaleString()}</div><div className="menu-total-label">kcal totales semana</div></div>
             <div className="menu-total-item"><div className="menu-total-value">{Math.round(totalCal/7)}</div><div className="menu-total-label">kcal promedio/día</div></div>
-            <div className="menu-total-item"><div className="menu-total-value">21</div><div className="menu-total-label">comidas planificadas</div></div>
+            <div className="menu-total-item"><div className="menu-total-value">{avgProtein}g</div><div className="menu-total-label">proteína/día</div></div>
+            <div className="menu-total-item"><div className="menu-total-value">{avgCarbs}g</div><div className="menu-total-label">carbos/día</div></div>
+            <div className="menu-total-item"><div className="menu-total-value">{avgFat}g</div><div className="menu-total-label">grasas/día</div></div>
+            <div className="menu-total-item"><div className="menu-total-value">28</div><div className="menu-total-label">comidas planificadas</div></div>
           </div>
         </div>
       )}
