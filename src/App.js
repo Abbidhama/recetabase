@@ -137,7 +137,7 @@ function AddRecipe({ onAdd }) {
   async function callAI(prompt, systemPrompt) {
     const sys = systemPrompt || `Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
-    const res = await fetch("/api/claude", {
+    const res = await fetch("https://subgcucynbjrhnkpsfjh.supabase.co/functions/v1/claude-proxy", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
