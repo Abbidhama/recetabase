@@ -3,14 +3,23 @@ import { getRecipes, addRecipe, deleteRecipe } from "./lib/supabase";
 import { supabase } from "./lib/supabase";
 import "./App.css";
 
-// ── CONSTANTS ────────────────────────────────────────────
+const PROXY = "https://subgcucynbjrhnkpsfjh.supabase.co/functions/v1/claude-proxy";
+const MODEL = "claude-sonnet-4-6";
+
 const FOOD_TYPES = ["Principal","Entrante","Ensalada","Sopa","Postre","Desayuno","Snack"];
 const BASES      = ["Pasta","Arroz","Legumbre","Verduras","Pan/Tortilla","Caldo","Masa","Carne","Pescado"];
 const CUISINES   = ["Italiana","Mexicana","Mediterránea","Asiática","Americana","Española","Francesa","India"];
 const SOURCES    = ["Manual","PDF","Web","Texto PDF"];
-const DAYS       = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"];
 
-// ── MACRO BAR ────────────────────────────────────────────
+async function callProxy(body) {
+  const res = await fetch(PROXY, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
 function MacroBar({ protein, carbs, fat }) {
   const total = (protein||0)+(carbs||0)+(fat||0)||1;
   return (
@@ -29,7 +38,6 @@ function MacroBar({ protein, carbs, fat }) {
   );
 }
 
-// ── RECIPE CARD ──────────────────────────────────────────
 function RecipeCard({ recipe, onClick, onDelete, onEdit }) {
   return (
     <div className="recipe-card" onClick={()=>onClick(recipe)}>
@@ -50,7 +58,7 @@ function RecipeCard({ recipe, onClick, onDelete, onEdit }) {
           {recipe.source && <span className="tag tag-source">{recipe.source}</span>}
         </div>
         <MacroBar protein={recipe.protein} carbs={recipe.carbs} fat={recipe.fat}/>
-        <div style={{position:"absolute",bottom:10,right:10,display:"flex",gap:6,opacity:0}} className="card-actions">
+        <div className="card-actions">
           <button className="btn-delete" style={{position:"static",opacity:1}} onClick={e=>{e.stopPropagation();onEdit(recipe);}}>✏️</button>
           <button className="btn-delete" style={{position:"static",opacity:1}} onClick={e=>{e.stopPropagation();onDelete(recipe.id);}}>🗑</button>
         </div>
@@ -59,7 +67,6 @@ function RecipeCard({ recipe, onClick, onDelete, onEdit }) {
   );
 }
 
-// ── RECIPE MODAL ─────────────────────────────────────────
 function RecipeModal({ recipe, onClose, onEdit }) {
   if (!recipe) return null;
   const ingredients = Array.isArray(recipe.ingredients)?recipe.ingredients:[];
@@ -76,10 +83,8 @@ function RecipeModal({ recipe, onClose, onEdit }) {
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <button
-              onClick={()=>{onClose();onEdit(recipe);}}
-              style={{padding:"6px 14px",background:"var(--rust)",color:"white",border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}
-            >
+            <button onClick={()=>{onClose();onEdit(recipe);}}
+              style={{padding:"6px 14px",background:"var(--rust)",color:"white",border:"none",borderRadius:7,cursor:"pointer",fontSize:13,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>
               ✏️ Editar
             </button>
             <button className="modal-close" onClick={onClose}>×</button>
@@ -127,63 +132,49 @@ function RecipeModal({ recipe, onClose, onEdit }) {
   );
 }
 
-// ── EDIT MODAL ───────────────────────────────────────────
 function EditModal({ recipe, onClose, onSave }) {
   const [form, setForm] = useState({
-    name:             recipe.name||"",
-    origin:           recipe.origin||"",
-    cuisine:          recipe.cuisine||"",
-    type:             recipe.type||"",
-    base:             recipe.base||"",
-    main_ingredient:  recipe.main_ingredient||"",
-    calories:         recipe.calories||"",
-    protein:          recipe.protein||"",
-    carbs:            recipe.carbs||"",
-    fat:              recipe.fat||"",
-    source:           recipe.source||"Manual",
+    name:            recipe.name||"",
+    origin:          recipe.origin||"",
+    cuisine:         recipe.cuisine||"",
+    type:            recipe.type||"",
+    base:            recipe.base||"",
+    main_ingredient: recipe.main_ingredient||"",
+    calories:        recipe.calories||"",
+    protein:         recipe.protein||"",
+    carbs:           recipe.carbs||"",
+    fat:             recipe.fat||"",
+    source:          recipe.source||"Manual",
     ingredients: Array.isArray(recipe.ingredients)?recipe.ingredients.join("\n"):"",
     steps:       Array.isArray(recipe.steps)?recipe.steps.join("\n"):"",
     tags:        Array.isArray(recipe.tags)?recipe.tags.join(", "):"",
   });
-  const [saving, setSaving] = useState(false);
+  const [saving,    setSaving]    = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiMsg, setAiMsg] = useState("");
-
+  const [aiMsg,     setAiMsg]     = useState("");
   const setF = (k,v) => setForm(f=>({...f,[k]:v}));
 
-  // Calcular solo macros con IA sin tocar nada más
   async function calcularMacrosIA() {
     if (!form.name) return;
     setAiLoading(true); setAiMsg("");
     try {
       const ingredientsList = form.ingredients.trim()||`receta de ${form.name}`;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-          "anthropic-version":"2023-06-01"
-        },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-6",
-          max_tokens:300,
-          system:`Eres un nutricionista experto. Responde SOLO con JSON válido, sin markdown ni texto extra.
+      const data = await callProxy({
+        model: MODEL, max_tokens: 300,
+        system: `Eres un nutricionista experto. Responde SOLO con JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"calories":0,"protein":0,"carbs":0,"fat":0}
 Todos los valores son números enteros. Calorías en kcal, macros en gramos por ración.`,
-          messages:[{role:"user",content:`Calcula las calorías y macros (proteínas, carbohidratos, grasas) de esta receta para una ración:\n\nReceta: ${form.name}\nIngredientes: ${ingredientsList}`}]
-        })
+        messages:[{role:"user",content:`Calcula las calorías y macros de esta receta para una ración:\n\nReceta: ${form.name}\nIngredientes: ${ingredientsList}`}]
       });
-      const data = await res.json();
       const text = data.content?.map(b=>b.text||"").join("")||"";
       const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
-      setForm(f=>({
-        ...f,
+      setForm(f=>({...f,
         calories: parsed.calories||f.calories,
         protein:  parsed.protein||f.protein,
         carbs:    parsed.carbs||f.carbs,
         fat:      parsed.fat||f.fat,
       }));
-      setAiMsg("✓ Macros calculados por IA. Puedes ajustarlos si es necesario.");
+      setAiMsg("✓ Macros calculados. Puedes ajustarlos si es necesario.");
     } catch {
       setAiMsg("No se pudieron calcular los macros. Inténtalo de nuevo.");
     }
@@ -215,7 +206,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
-          {/* Nombre y origen */}
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Nombre *</label>
@@ -223,16 +213,9 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
             </div>
             <div className="form-group">
               <label className="form-label">Origen / Fuente</label>
-              <input
-                className="form-input"
-                placeholder="País, libro, web, restaurante..."
-                value={form.origin}
-                onChange={e=>setF("origin",e.target.value)}
-              />
+              <input className="form-input" placeholder="País, libro, web, restaurante..." value={form.origin} onChange={e=>setF("origin",e.target.value)}/>
             </div>
           </div>
-
-          {/* Cocina y tipo */}
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Cocina</label>
@@ -249,8 +232,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
               </select>
             </div>
           </div>
-
-          {/* Base e ingrediente principal */}
           <div className="form-row">
             <div className="form-group">
               <label className="form-label">Base del plato</label>
@@ -264,23 +245,14 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
               <input className="form-input" placeholder="Ej: Pollo, Tofu..." value={form.main_ingredient} onChange={e=>setF("main_ingredient",e.target.value)}/>
             </div>
           </div>
-
-          {/* Ingredientes */}
           <div className="form-group">
             <label className="form-label">Ingredientes (uno por línea)</label>
             <textarea className="form-input form-textarea" value={form.ingredients} onChange={e=>setF("ingredients",e.target.value)}/>
           </div>
-
-          {/* Macros */}
           <div style={{background:"var(--paper)",borderRadius:10,padding:"14px 16px",marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <span className="form-label" style={{margin:0}}>Calorías y macros</span>
-              <button
-                className="btn-ai"
-                style={{padding:"6px 14px",fontSize:12}}
-                onClick={calcularMacrosIA}
-                disabled={aiLoading||!form.name}
-              >
+              <button className="btn-ai" style={{padding:"6px 14px",fontSize:12}} onClick={calcularMacrosIA} disabled={aiLoading||!form.name}>
                 {aiLoading?<><div className="spinner"/>Calculando...</>:<>🤖 Calcular con IA</>}
               </button>
             </div>
@@ -294,20 +266,14 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
               ))}
             </div>
           </div>
-
-          {/* Pasos */}
           <div className="form-group">
             <label className="form-label">Pasos de preparación (uno por línea)</label>
             <textarea className="form-input form-textarea" value={form.steps} onChange={e=>setF("steps",e.target.value)}/>
           </div>
-
-          {/* Etiquetas */}
           <div className="form-group">
             <label className="form-label">Etiquetas (separadas por comas)</label>
             <input className="form-input" value={form.tags} onChange={e=>setF("tags",e.target.value)}/>
           </div>
-
-          {/* Botones */}
           <div style={{display:"flex",gap:12,justifyContent:"flex-end",paddingTop:8}}>
             <button className="btn-primary" style={{background:"var(--warm-gray)"}} onClick={onClose}>Cancelar</button>
             <button className="btn-primary" onClick={handleSave} disabled={saving||!form.name}>
@@ -320,16 +286,15 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
   );
 }
 
-// ── ADD RECIPE ───────────────────────────────────────────
 function AddRecipe({ onAdd }) {
-  const [inputMode, setInputMode] = useState("manual");
-  const [loading,   setLoading]   = useState(false);
-  const [aiLoading, setAiLoading] = useState(false); // solo para calcular macros
-  const [aiMsg,     setAiMsg]     = useState("");
-  const [urlValue,  setUrlValue]  = useState("");
-  const [pdfText,   setPdfText]   = useState("");
+  const [inputMode,    setInputMode]    = useState("manual");
+  const [loading,      setLoading]      = useState(false);
+  const [aiLoading,    setAiLoading]    = useState(false);
+  const [aiMsg,        setAiMsg]        = useState("");
+  const [urlValue,     setUrlValue]     = useState("");
+  const [pdfText,      setPdfText]      = useState("");
   const [bulkProgress, setBulkProgress] = useState(null);
-  const [success,   setSuccess]   = useState(false);
+  const [success,      setSuccess]      = useState(false);
   const emptyForm = {
     name:"", origin:"", cuisine:"", type:"", base:"", main_ingredient:"",
     calories:"", protein:"", carbs:"", fat:"", source:"Manual",
@@ -341,21 +306,7 @@ function AddRecipe({ onAdd }) {
   async function callAI(prompt, systemPrompt) {
     const sys = systemPrompt||`Eres un asistente culinario experto. Responde SOLO en JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main_ingredient":"","calories":0,"protein":0,"carbs":0,"fat":0,"ingredients":[],"steps":[],"tags":[]}`;
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-        "anthropic-version":"2023-06-01"
-      },
-      body: JSON.stringify({
-        model:"claude-sonnet-4-6",
-        max_tokens:1000,
-        system:sys,
-        messages:[{role:"user",content:prompt}]
-      })
-    });
-    const data = await res.json();
+    const data = await callProxy({ model:MODEL, max_tokens:1000, system:sys, messages:[{role:"user",content:prompt}] });
     return data.content?.map(b=>b.text||"").join("")||"";
   }
 
@@ -381,39 +332,27 @@ Estructura exacta: {"name":"","origin":"","cuisine":"","type":"","base":"","main
     setLoading(false);
   }
 
-  // Calcula solo macros sin tocar el resto del formulario
   async function calcularMacrosIA() {
     if (!form.name) return;
     setAiLoading(true); setAiMsg("");
     try {
       const ingredientsList = form.ingredients.trim()||`receta de ${form.name}`;
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-          "anthropic-version":"2023-06-01"
-        },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-6",
-          max_tokens:300,
-          system:`Eres un nutricionista experto. Responde SOLO con JSON válido, sin markdown ni texto extra.
+      const data = await callProxy({
+        model: MODEL, max_tokens: 300,
+        system: `Eres un nutricionista experto. Responde SOLO con JSON válido, sin markdown ni texto extra.
 Estructura exacta: {"calories":0,"protein":0,"carbs":0,"fat":0}
 Todos los valores son números enteros. Calorías en kcal, macros en gramos por ración.`,
-          messages:[{role:"user",content:`Calcula las calorías y macros (proteínas, carbohidratos, grasas) de esta receta para una ración:\n\nReceta: ${form.name}\nIngredientes: ${ingredientsList}`}]
-        })
+        messages:[{role:"user",content:`Calcula las calorías y macros de esta receta para una ración:\n\nReceta: ${form.name}\nIngredientes: ${ingredientsList}`}]
       });
-      const data = await res.json();
       const text = data.content?.map(b=>b.text||"").join("")||"";
       const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
-      setForm(f=>({
-        ...f,
+      setForm(f=>({...f,
         calories: parsed.calories||f.calories,
         protein:  parsed.protein||f.protein,
         carbs:    parsed.carbs||f.carbs,
         fat:      parsed.fat||f.fat,
       }));
-      setAiMsg("✓ Macros calculados. Puedes ajustarlos manualmente si lo deseas.");
+      setAiMsg("✓ Macros calculados. Puedes ajustarlos si lo deseas.");
     } catch {
       setAiMsg("No se pudieron calcular los macros.");
     }
@@ -432,14 +371,11 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
       if (!Array.isArray(names)||names.length===0) throw new Error("No se encontraron recetas");
       setBulkProgress({done:0,total:names.length});
       for (let i=0;i<names.length;i++) {
-        const name = names[i];
         try {
-          const text = await callAI(
-            `Del siguiente texto, extrae la receta completa de "${name}". Incluye ingredientes reales del texto y estima los macros nutricionales.\n\nTEXTO:\n${pdfText.slice(0,8000)}`
-          );
+          const text = await callAI(`Del siguiente texto, extrae la receta completa de "${names[i]}". Incluye ingredientes reales del texto y estima los macros nutricionales.\n\nTEXTO:\n${pdfText.slice(0,8000)}`);
           const parsed = JSON.parse(text.replace(/```json|```/g,"").trim());
-          const recipe = {
-            name: parsed.name||name, origin: parsed.origin||"",
+          await onAdd({
+            name: parsed.name||names[i], origin: parsed.origin||"",
             cuisine: parsed.cuisine||"Española", type: parsed.type||"Principal",
             base: parsed.base||"", main_ingredient: parsed.main_ingredient||"",
             calories: parseInt(parsed.calories)||0, protein: parseInt(parsed.protein)||0,
@@ -448,8 +384,7 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
             ingredients: Array.isArray(parsed.ingredients)?parsed.ingredients:[],
             steps:       Array.isArray(parsed.steps)?parsed.steps:[],
             tags:        Array.isArray(parsed.tags)?parsed.tags:[],
-          };
-          await onAdd(recipe,true);
+          }, true);
         } catch {}
         setBulkProgress({done:i+1,total:names.length});
       }
@@ -458,25 +393,20 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
     } catch {
       setAiMsg("Error al procesar el texto. Asegúrate de haber pegado el texto completo.");
     }
-    setLoading(false);
-    setBulkProgress(null);
+    setLoading(false); setBulkProgress(null);
   }
 
   async function handleSave() {
     if (!form.name) return;
-    const recipe = {
+    await onAdd({
       ...form,
-      calories: parseInt(form.calories)||0,
-      protein:  parseInt(form.protein)||0,
-      carbs:    parseInt(form.carbs)||0,
-      fat:      parseInt(form.fat)||0,
+      calories: parseInt(form.calories)||0, protein: parseInt(form.protein)||0,
+      carbs: parseInt(form.carbs)||0, fat: parseInt(form.fat)||0,
       ingredients: form.ingredients.split("\n").filter(Boolean),
       steps:       form.steps.split("\n").filter(Boolean),
       tags:        form.tags.split(",").map(t=>t.trim()).filter(Boolean),
-    };
-    await onAdd(recipe);
-    setSuccess(true);
-    setForm(emptyForm);
+    });
+    setSuccess(true); setForm(emptyForm);
     setTimeout(()=>setSuccess(false),3000);
   }
 
@@ -484,7 +414,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
     <div className="add-form">
       <div className="form-title">Añadir Receta</div>
       <div className="form-subtitle">Importa desde texto de PDF, URL o añade manualmente.</div>
-
       <div className="input-sources" style={{gridTemplateColumns:"repeat(3,1fr)"}}>
         {[{key:"manual",icon:"✍️",label:"Manual",desc:"Rellena el formulario"},
           {key:"pdf",   icon:"📋",label:"Pegar texto PDF",desc:"Copia el texto del PDF aquí"},
@@ -498,32 +427,26 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
         ))}
       </div>
 
-      {/* ── MODO PDF ── */}
       {inputMode==="pdf"&&(
         <div className="form-section">
           <div className="ai-hint-box">
             📋 <strong>Cómo usarlo:</strong> Abre tu PDF → selecciona todo el texto (<strong>Ctrl+A</strong>) → cópialo (<strong>Ctrl+C</strong>) → pégalo aquí abajo (<strong>Ctrl+V</strong>). La IA extraerá todas las recetas automáticamente.
           </div>
           <label className="form-label">Texto del PDF</label>
-          <textarea
-            className="form-input form-textarea"
-            style={{minHeight:180}}
+          <textarea className="form-input form-textarea" style={{minHeight:180}}
             placeholder="Pega aquí el texto copiado de tu PDF..."
-            value={pdfText}
-            onChange={e=>setPdfText(e.target.value)}
-          />
+            value={pdfText} onChange={e=>setPdfText(e.target.value)}/>
           {bulkProgress&&(
             <div style={{margin:"12px 0"}}>
               <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--warm-gray)",marginBottom:6}}>
-                <span>Importando recetas...</span>
-                <span>{bulkProgress.done} / {bulkProgress.total}</span>
+                <span>Importando recetas...</span><span>{bulkProgress.done} / {bulkProgress.total}</span>
               </div>
               <div style={{height:6,background:"#E8E3DB",borderRadius:3,overflow:"hidden"}}>
                 <div style={{height:"100%",background:"var(--rust)",borderRadius:3,width:`${(bulkProgress.done/bulkProgress.total)*100}%`,transition:"width .3s"}}/>
               </div>
             </div>
           )}
-          <div style={{display:"flex",gap:12,alignItems:"center",marginTop:12,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:12,alignItems:"center",marginTop:12}}>
             <button className="btn-ai" onClick={handleBulkImport} disabled={loading||!pdfText.trim()}>
               {loading?<><div className="spinner"/>Procesando...</>:<>🤖 Importar todas las recetas con IA</>}
             </button>
@@ -532,7 +455,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
         </div>
       )}
 
-      {/* ── MODO URL ── */}
       {inputMode==="url"&&(
         <div className="form-section">
           <label className="form-label">URL de la receta</label>
@@ -546,14 +468,12 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
         </div>
       )}
 
-      {/* ── MODO MANUAL ── */}
       {inputMode==="manual"&&(
         <div className="ai-hint-box">
           🤖 <strong>Tip:</strong> Rellena el nombre e ingredientes y pulsa <em>"Calcular macros con IA"</em> para obtener las calorías sin cambiar nada más.
         </div>
       )}
 
-      {/* ── FORMULARIO (manual y url) ── */}
       {(inputMode==="manual"||inputMode==="url")&&(
         <div className="form-section">
           <div className="form-row">
@@ -563,12 +483,7 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
             </div>
             <div className="form-group">
               <label className="form-label">Origen / Fuente</label>
-              <input
-                className="form-input"
-                placeholder="País, libro, web, restaurante..."
-                value={form.origin}
-                onChange={e=>setF("origin",e.target.value)}
-              />
+              <input className="form-input" placeholder="País, libro, web, restaurante..." value={form.origin} onChange={e=>setF("origin",e.target.value)}/>
             </div>
           </div>
           <div className="form-row">
@@ -600,24 +515,15 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
               <input className="form-input" placeholder="Ej: Pollo, Tofu..." value={form.main_ingredient} onChange={e=>setF("main_ingredient",e.target.value)}/>
             </div>
           </div>
-
-          {/* Ingredientes primero para que la IA los use en el cálculo */}
           <div className="form-group">
             <label className="form-label">Ingredientes (uno por línea)</label>
             <textarea className="form-input form-textarea" placeholder={"200g pasta\n2 huevos\n..."} value={form.ingredients} onChange={e=>setF("ingredients",e.target.value)}/>
           </div>
-
-          {/* Macros con botón IA */}
           <div style={{background:"var(--paper)",borderRadius:10,padding:"14px 16px",marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <span className="form-label" style={{margin:0}}>Calorías y macros</span>
               {inputMode==="manual"&&(
-                <button
-                  className="btn-ai"
-                  style={{padding:"6px 14px",fontSize:12}}
-                  onClick={calcularMacrosIA}
-                  disabled={aiLoading||!form.name}
-                >
+                <button className="btn-ai" style={{padding:"6px 14px",fontSize:12}} onClick={calcularMacrosIA} disabled={aiLoading||!form.name}>
                   {aiLoading?<><div className="spinner"/>Calculando...</>:<>🤖 Calcular con IA</>}
                 </button>
               )}
@@ -632,7 +538,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
               ))}
             </div>
           </div>
-
           <div className="form-group">
             <label className="form-label">Pasos de preparación (uno por línea)</label>
             <textarea className="form-input form-textarea" placeholder={"Cocer la pasta\nPreparar la salsa..."} value={form.steps} onChange={e=>setF("steps",e.target.value)}/>
@@ -656,7 +561,6 @@ Todos los valores son números enteros. Calorías en kcal, macros en gramos por 
   );
 }
 
-// ── WEEKLY MENU ──────────────────────────────────────────
 function WeeklyMenu({ recipes }) {
   const [prefs,   setPrefs]   = useState({maxCal:600,cuisine:"",diet:""});
   const [menu,    setMenu]    = useState(null);
@@ -667,26 +571,16 @@ function WeeklyMenu({ recipes }) {
     setLoading(true); setErr(""); setMenu(null);
     const names = recipes.map(r=>`${r.name} (${r.calories}kcal, ${r.type})`).join(", ");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key": process.env.REACT_APP_ANTHROPIC_KEY,
-          "anthropic-version":"2023-06-01"
-        },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-6",
-          max_tokens:1000,
-          system:`Eres nutricionista experto. Responde SOLO en JSON válido, sin markdown.
+      const data = await callProxy({
+        model: MODEL, max_tokens: 1000,
+        system: `Eres nutricionista experto. Responde SOLO en JSON válido, sin markdown.
 Estructura: {"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","dinner":"nombre","totalCal":0},... 7 días]}`,
-          messages:[{role:"user",content:`Menú semanal: máx ${prefs.maxCal}kcal/comida${prefs.cuisine?`, cocina ${prefs.cuisine}`:""}${prefs.diet?`, dieta ${prefs.diet}`:""}.${names?` Recetas disponibles: ${names}`:""}`}]
-        })
+        messages:[{role:"user",content:`Menú semanal: máx ${prefs.maxCal}kcal/comida${prefs.cuisine?`, cocina ${prefs.cuisine}`:""}${prefs.diet?`, dieta ${prefs.diet}`:""}.${names?` Recetas disponibles: ${names}`:""}`}]
       });
-      const data = await res.json();
       const text = data.content?.map(b=>b.text||"").join("")||"";
       setMenu(JSON.parse(text.replace(/```json|```/g,"").trim()));
     } catch {
-      setErr("No se pudo generar el menú. Comprueba tu API key en el .env.local");
+      setErr("No se pudo generar el menú.");
     }
     setLoading(false);
   }
@@ -750,18 +644,16 @@ Estructura: {"days":[{"day":"Lun","breakfast":"nombre","lunch":"nombre","dinner"
   );
 }
 
-// ── MAIN APP ─────────────────────────────────────────────
 export default function App() {
-  const [tab,        setTab]        = useState("recipes");
-  const [recipes,    setRecipes]    = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [selected,   setSelected]   = useState(null);
-  const [editing,    setEditing]    = useState(null); // receta que se está editando
-  const [filters,    setFilters]    = useState({search:"",type:"",base:"",cuisine:"",source:"",maxCal:2000});
+  const [tab,      setTab]      = useState("recipes");
+  const [recipes,  setRecipes]  = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [editing,  setEditing]  = useState(null);
+  const [filters,  setFilters]  = useState({search:"",type:"",base:"",cuisine:"",source:"",maxCal:2000});
 
   useEffect(()=>{
-    getRecipes().then(data=>{setRecipes(data||[]);setLoading(false);})
-                .catch(()=>setLoading(false));
+    getRecipes().then(data=>{setRecipes(data||[]);setLoading(false);}).catch(()=>setLoading(false));
   },[]);
 
   const setF = (k,v) => setFilters(f=>({...f,[k]:v}));
@@ -792,22 +684,15 @@ export default function App() {
     setRecipes(prev=>prev.filter(r=>r.id!==id));
   }
 
-  // Guarda los cambios de una receta editada en Supabase
   async function handleEdit(id, updated) {
-    const { data, error } = await supabase
-      .from("recipes")
-      .update(updated)
-      .eq("id", id)
-      .select()
-      .single();
+    const { data, error } = await supabase.from("recipes").update(updated).eq("id",id).select().single();
     if (error) { alert("Error al guardar: "+error.message); return; }
     setRecipes(prev=>prev.map(r=>r.id===id?data:r));
-    // Si el modal de detalle estaba abierto, actualizamos también
     if (selected?.id===id) setSelected(data);
   }
 
   function openEdit(recipe) {
-    setSelected(null); // cierra el modal de detalle si estaba abierto
+    setSelected(null);
     setEditing(recipe);
   }
 
@@ -824,7 +709,6 @@ export default function App() {
           ))}
         </nav>
       </header>
-
       <div className="main">
         {tab==="recipes"&&(
           <>
@@ -879,11 +763,7 @@ export default function App() {
         {tab==="add"  &&<div className="content"><AddRecipe onAdd={handleAdd}/></div>}
         {tab==="menu" &&<div className="content"><WeeklyMenu recipes={recipes}/></div>}
       </div>
-
-      {/* Modal de detalle */}
       {selected&&!editing&&<RecipeModal recipe={selected} onClose={()=>setSelected(null)} onEdit={openEdit}/>}
-
-      {/* Modal de edición */}
       {editing&&<EditModal recipe={editing} onClose={()=>setEditing(null)} onSave={handleEdit}/>}
     </div>
   );
